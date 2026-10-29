@@ -1284,7 +1284,7 @@ else if(!PV_CONFIG.SUPABASE_ANON_KEY||/PASTE/.test(PV_CONFIG.SUPABASE_ANON_KEY))
 /* ============ PREMVIO — shared helpers ============ */
 if (window.pvDead) throw new Error("stopped");
 const CFG = window.PV_CONFIG;
-const PV_BUILD = "V81";   // shown in the admin + manager menu so the owner can see which version is loaded
+const PV_BUILD = "V82";   // shown in the admin + manager menu so the owner can see which version is loaded
 // Each panel keeps its own login, so logging out of one never logs out the others.
 // agent.html and agent-deposit.html share the agent login (log in once, use both).
 const PV_PANEL = /admin\.html/i.test(location.pathname) ? "admin" : /agent(-deposit)?\.html/i.test(location.pathname) ? "agent"
@@ -2026,6 +2026,76 @@ async function mfaEnroll(p, next) {
 }
 
 
+/* ============ V82 "Ask my manager" (support, marketing, agent panels) ============
+   teamView(v, threadId, opts) — opts.base = hash prefix of this page ("team"), opts.me = my profile */
+async function teamView(v, id, opts = {}) {
+  const base = opts.base || "team";
+  if (window.PV_TEAM_CH) { sb.removeChannel(window.PV_TEAM_CH); window.PV_TEAM_CH = null; }
+  if (id) return teamThread(v, id, opts);
+  const [{ data: mgr }, { data: list, error }] = await Promise.all([sb.rpc("my_manager"),
+    sb.from("tickets").select("*").eq("user_id", opts.me.id).eq("kind", "staff").order("updated_at", { ascending: false }).limit(50)]);
+  if (error) { v.innerHTML = `<div class="card">${/kind/.test(error.message || "") ? "Ask the admin to run update 56." : esc(errMsg(error))}</div>`; return; }
+  v.innerHTML = `<div class="card"><div class="row" style="gap:10px"><div class="big-avatar" style="margin:0;width:44px;height:44px">${ICONS.user}</div>
+      <div>${mgr ? `<b>${esc(mgr.full_name || "")}</b> <span class="mono small muted">${esc(mgr.member_id)}</span><div class="small muted">Your manager — they get a notification and answer when they can.</div>`
+        : `<b>No manager yet</b><div class="small muted">Ask the admin to give you a manager.</div>`}</div></div></div>
+    ${mgr ? `<div class="card"><h3 style="margin-top:0">New question</h3><form id="tqf">
+      <label>Topic</label><input name="s" required maxlength="80" placeholder="e.g. Customer wants a refund">
+      <label>Your question</label><textarea name="b" required maxlength="1000" rows="3"></textarea>
+      <button class="btn block mt">${ICONS.send} Send to my manager</button></form></div>` : ""}
+    <h3>My questions</h3>
+    ${(list || []).length ? list.map((t) => `<a class="card sp-item" href="#${base}/${t.id}" style="display:block;color:inherit;text-decoration:none">
+      <div class="row between" style="gap:8px"><b>${esc(t.subject)}</b><span class="small muted">${fmtDate(t.updated_at)}</span></div>
+      <div class="mt">${t.status === "closed" ? `<span class="badge completed">solved</span>` : t.waiting_for === "customer" ? `<span class="badge agent">manager replied</span>` : `<span class="badge pending">waiting for manager</span>`}</div></a>`).join("")
+      : `<div class="empty">No questions yet</div>`}`;
+  if ($("#tqf")) $("#tqf").onsubmit = (e) => {
+    e.preventDefault();
+    busy($("button", e.target), async () => {
+      const { data: tid, error: er } = await sb.rpc("staff_ask_manager", { p_subject: e.target.s.value.trim(), p_body: e.target.b.value.trim() });
+      if (er) throw er;
+      toast("Sent to your manager.", "success"); location.hash = `${base}/${tid}`;
+    });
+  };
+}
+async function teamThread(v, id, opts) {
+  const base = opts.base || "team";
+  const [{ data: t, error }, { data: msgs }] = await Promise.all([
+    sb.from("tickets").select("*").eq("id", id).single(),
+    sb.from("ticket_messages").select("*").eq("ticket_id", id).order("created_at")]);
+  if (error || !t) { location.hash = base; return; }
+  const open = t.status === "open";
+  v.innerHTML = `<a class="back-link" href="#${base}">← My questions</a>
+    <div class="card"><div class="row between" style="gap:8px"><h2 style="margin:0">${esc(t.subject)}</h2>
+      ${open ? `<button class="btn sm success" id="tSolved">Solved</button>` : `<span class="badge completed">solved</span>`}</div>
+      <div class="chat admin-chat" id="tBox"></div>
+      <form id="trf" class="chat-input" style="position:static"><textarea name="m" rows="2" maxlength="1000" placeholder="Write…" required></textarea>
+        <button class="btn" aria-label="Send">${ICONS.send}</button></form></div>`;
+  const box = $("#tBox"), seen = new Set();
+  // my messages on the right, the manager's on the left
+  const add = (m) => { if (seen.has(m.id)) return; seen.add(m.id);
+    box.insertAdjacentHTML("beforeend", m.kind === "system" ? `<div class="chat-sys">${esc(m.body)}</div>`
+      : `<div class="bubble ${m.from_staff ? "them" : "me"}">${m.from_staff ? `<div class="who">Manager</div>` : ""}<div>${esc(m.body)}</div><div class="t">${fmtDate(m.created_at)}</div></div>`);
+    box.scrollTop = box.scrollHeight; };
+  (msgs || []).forEach(add);
+  window.PV_TEAM_CH = sb.channel("team-" + id).on("postgres_changes", { event: "INSERT", schema: "public", table: "ticket_messages", filter: `ticket_id=eq.${id}` }, (x) => add(x.new)).subscribe();
+  const f = $("#trf");
+  f.m.onkeydown = (e) => { if (e.key === "Enter" && !e.shiftKey && !/Android|iPhone/i.test(navigator.userAgent)) { e.preventDefault(); f.requestSubmit(); } };
+  f.onsubmit = (e) => {
+    e.preventDefault();
+    const body = f.m.value.trim(); if (!body) return;
+    busy($("button", f), async () => {
+      const { data: mid, error: er } = await sb.rpc("send_ticket_message", { p_ticket: id, p_body: body });
+      if (er) throw er;
+      f.m.value = ""; add({ id: mid, from_staff: false, kind: "msg", body, created_at: new Date().toISOString() });
+      if (!open) teamThread(v, id, opts);
+    });
+  };
+  if ($("#tSolved")) $("#tSolved").onclick = async () => {
+    const { error: er } = await sb.rpc("close_ticket", { p_ticket: id });
+    if (er) return toast(errMsg(er), "error");
+    location.hash = base;
+  };
+}
+
 </script>
 <script>
 /* ============ PREMVIO — Account manager panel (V78) ============
@@ -2049,7 +2119,8 @@ sb.auth.getSession().then(async ({ data }) => {
 const MG_ALL = [
   { id: "requests", label: "Password requests", icon: ICONS.lock },
   { id: "customers", label: "My customers", icon: ICONS.users },
-  { id: "chats", label: "Help chats", icon: ICONS.chat, perm: "help" },
+  { id: "chats", label: "Help chats", icon: ICONS.chat },          // passed-on chats always; waiting chats only with the "help" tick box
+  { id: "team", label: "Team questions", icon: ICONS.users },
   { id: "kyc", label: "KYC review", icon: ICONS.idcard, perm: "kyc" },
   { id: "deposits", label: "Customer deposits", icon: ICONS.cash, perm: "deposits" },
   { id: "payouts", label: "Withdrawal requests", icon: ICONS.wallet, perm: "payouts" },
@@ -2106,7 +2177,8 @@ function route() {
   const v = $("#view");
   v.innerHTML = `<div class="loader"></div>`;
   if (MG.ch) { sb.removeChannel(MG.ch); MG.ch = null; }
-  const pages = { requests, customers, profile, chats: (x) => (hashArg() ? chat(x, Number(hashArg())) : chats(x)), kyc: kycPage,
+  const pages = { requests, customers, profile, chats: (x) => (hashArg() ? chat(x, Number(hashArg())) : chats(x)),
+    team: (x) => (hashArg() ? chat(x, Number(hashArg()), "team") : teamPage(x)), kyc: kycPage,
     deposits: (x) => depositsPage(x, "customer"), agentdeposits: (x) => depositsPage(x, "agent"), payouts: payoutsPage, agentpay: agentPayPage,
     sells: sellsPage, giveaways: giveawaysPage };
   pages[s](v).catch((e) => (v.innerHTML = `<div class="card">${esc(errMsg(e))}</div>`));
@@ -2485,15 +2557,18 @@ async function giveawaysPage(v) {
 
 /* ---------- help chats (same as the support panel) ---------- */
 async function chats(v) {
-  MG.cf2 = MG.cf2 || "waiting";
+  const canWait = !!(MG.lim?.perms || {}).help;
+  MG.cf2 = MG.cf2 || (canWait ? "waiting" : "mine");
+  if (!canWait && MG.cf2 === "waiting") MG.cf2 = "mine";
   const { data, error } = await sb.rpc("support_chats", { p_filter: MG.cf2 });
   if (error) throw error;
-  v.innerHTML = `<div class="chips">${[["waiting", "Waiting"], ["mine", "My chats"], ["closed", "Solved by me"]]
+  v.innerHTML = `${canWait ? "" : `<p class="small muted">Here you see chats your team passed to you. (Waiting chats need the “Help chats” switch from the admin.)</p>`}
+    <div class="chips">${[...(canWait ? [["waiting", "Waiting"]] : []), ["mine", "My chats"], ["closed", "Solved by me"]]
       .map(([k, l]) => `<button class="chip ${MG.cf2 === k ? "on" : ""}" data-cf2="${k}">${l}</button>`).join("")}</div>
     <div class="sp-list">${data.length ? data.map((t) => `<div class="card sp-item" data-open="${t.id}">
       <div class="row between" style="gap:8px"><div style="min-width:0"><b>${esc(t.full_name || "Customer")}</b> <span class="small muted mono">${esc(t.member_id)}</span>${t.role === "agent" ? ` <span class="badge agent-chat">Premvio Agent</span>` : ""}${t.role === "guest" ? ` <span class="badge guest-chat">GUEST</span>` : ""}</div>
         <span class="small muted" style="white-space:nowrap">${fmtDate(t.updated_at)}</span></div>
-      <div class="sp-sub"><b>${esc(t.subject)}</b> <span class="muted">#${t.id}</span></div>
+      <div class="sp-sub"><b>${esc(t.subject)}</b> <span class="muted">#${t.id}</span>${t.escalated_by ? ` <span class="badge pending">🆘 from ${esc(t.escalated_by)}</span>` : ""}</div>
       ${t.last_msg ? `<div class="small muted sp-last">${esc(t.last_msg)}</div>` : ""}
       <div class="row between mt" style="gap:8px"><span>${t.status === "closed" ? `<span class="badge completed">solved</span>` : !t.accepted_at ? `<span class="badge pending">waiting</span>` : `<span class="badge agent">${t.mine ? "you" : esc(t.accepted_name || "accepted")}</span>`}</span>
         ${t.status === "open" && !t.accepted_at ? `<button class="btn sm" data-acc="${t.id}">Accept</button>` : ""}</div></div>`).join("") : `<div class="empty">No chats here</div>`}</div>`;
@@ -2505,14 +2580,15 @@ async function chats(v) {
     location.hash = "chats/" + b.dataset.acc;
   })));
 }
-async function chat(v, id) {
+async function chat(v, id, back = "chats") {
   const [{ data: t, error }, { data: msgs }, { data: info, error: e2 }] = await Promise.all([
     sb.from("tickets").select("*").eq("id", id).single(),
     sb.from("ticket_messages").select("*").eq("ticket_id", id).order("created_at"),
     sb.rpc("support_ticket_info", { p_ticket: id })]);
-  if (error || e2 || !t) { toast("This chat was accepted by someone else.", "error"); location.hash = "chats"; return; }
+  if (error || e2 || !t) { toast("This chat was accepted by someone else.", "error"); location.hash = back; return; }
   const open = t.status === "open", accepted = !!t.accepted_at;
-  v.innerHTML = `<a class="back-link" href="#chats">← All chats</a>
+  v.innerHTML = `<a class="back-link" href="#${back}">← ${back === "team" ? "Team questions" : "All chats"}</a>
+    ${t.escalate_note ? `<div class="dup-box" style="border-color:rgba(255,176,32,.6);color:#ffb020;background:rgba(255,176,32,.1)">🆘 Note from your team: ${esc(t.escalate_note)}</div>` : ""}
     <div class="grid-2 mk-two"><div class="card"><div class="row between" style="gap:8px"><div><h2 style="margin:0">${esc(t.subject)} <span class="muted small">#${t.id}</span></h2>
         <div class="small muted">${esc(info.full_name || "")} · ${esc(info.member_id)}</div></div>
         ${open ? `<button class="btn sm success" id="closeT">Mark solved</button>` : `<span class="badge completed">solved</span>`}</div>
@@ -2547,8 +2623,28 @@ async function chat(v, id) {
     if (!(await confirmBox("Mark solved?", "The chat closes. They can open it again by replying.", "Mark solved"))) return;
     const { error: er } = await sb.rpc("close_ticket", { p_ticket: id });
     if (er) return toast(errMsg(er), "error");
-    location.hash = "chats";
+    location.hash = back;
   };
+}
+
+/* ---------- V82 team questions (support, agents, marketing ask their manager) ---------- */
+async function teamPage(v) {
+  MG.tf = MG.tf || "open";
+  const [{ data: team }, { data, error }] = await Promise.all([sb.rpc("manager_team"), sb.rpc("support_chats", { p_filter: "team" })]);
+  if (error) throw error;
+  const list = (data || []).filter((t) => MG.tf === "all" || (MG.tf === "open" ? t.status === "open" : t.status === "closed"));
+  v.innerHTML = `<div class="card"><h3 style="margin-top:0">My team</h3>
+      ${(team || []).length ? team.map((m) => `<div class="list-item"><div class="grow"><b>${esc(m.full_name || "")}</b> <span class="mono small muted">${esc(m.member_id)}</span>
+        <div class="small muted">${esc(m.role)}${m.phone ? " · " + esc(m.phone) : ""}</div></div>${Number(m.open_questions) ? `<span class="badge pending">${m.open_questions} open</span>` : ""}
+        ${m.blocked ? `<span class="badge blocked">blocked</span>` : ""}</div>`).join("") : `<p class="small muted">No team yet — the admin gives support, agents and marketing people to you.</p>`}</div>
+    <div class="chips">${[["open", "Open"], ["closed", "Solved"], ["all", "All"]].map(([k, l]) => `<button class="chip ${MG.tf === k ? "on" : ""}" data-tf="${k}">${l}</button>`).join("")}</div>
+    ${list.length ? list.map((t) => `<a class="card sp-item" href="#team/${t.id}" style="display:block;color:inherit;text-decoration:none">
+      <div class="row between" style="gap:8px"><div><b>${esc(t.full_name || "")}</b> <span class="mono small muted">${esc(t.member_id)}</span> · ${esc(t.role)}</div>
+        <span class="small muted">${fmtDate(t.updated_at)}</span></div>
+      <div class="sp-sub"><b>${esc(t.subject)}</b></div>${t.last_msg ? `<div class="small muted sp-last">${esc(t.last_msg)}</div>` : ""}
+      <div class="mt">${t.status === "closed" ? `<span class="badge completed">solved</span>` : t.waiting_for === "admin" ? `<span class="badge pending">needs your answer</span>` : `<span class="badge agent">you replied</span>`}</div></a>`).join("")
+      : `<div class="empty">No questions here</div>`}`;
+  $$("[data-tf]", v).forEach((c) => (c.onclick = () => { MG.tf = c.dataset.tf; route(); }));
 }
 
 </script>
