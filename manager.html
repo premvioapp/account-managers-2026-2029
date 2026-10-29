@@ -1284,6 +1284,7 @@ else if(!PV_CONFIG.SUPABASE_ANON_KEY||/PASTE/.test(PV_CONFIG.SUPABASE_ANON_KEY))
 /* ============ PREMVIO — shared helpers ============ */
 if (window.pvDead) throw new Error("stopped");
 const CFG = window.PV_CONFIG;
+const PV_BUILD = "V81";   // shown in the admin + manager menu so the owner can see which version is loaded
 // Each panel keeps its own login, so logging out of one never logs out the others.
 // agent.html and agent-deposit.html share the agent login (log in once, use both).
 const PV_PANEL = /admin\.html/i.test(location.pathname) ? "admin" : /agent(-deposit)?\.html/i.test(location.pathname) ? "agent"
@@ -2069,7 +2070,7 @@ async function start(p) {
   root.innerHTML = `
   <div class="panel">
     <aside class="sidebar" id="side">
-      <div class="brand"><img src="${PV_LOGO}" alt=""><div>Premvio<div class="small muted">Manager · ${esc(p.member_id)}</div></div></div>
+      <div class="brand"><img src="${PV_LOGO}" alt=""><div>Premvio<div class="small muted">Manager · ${esc(p.member_id)} · ${PV_BUILD}</div></div></div>
       ${MG_SECTIONS.map((s) => `<button class="side-link" data-s="${s.id}">${s.icon}<span>${s.label}</span>${s.id === "requests" ? `<span class="count hidden" id="reqCount"></span>` : ""}</button>`).join("")}
       <hr style="border:0;border-top:1px solid var(--line);margin:14px 0">
       <button class="side-link" id="pushBtn">${ICONS.bell}<span>Notifications</span></button>
