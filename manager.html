@@ -1284,7 +1284,7 @@ else if(!PV_CONFIG.SUPABASE_ANON_KEY||/PASTE/.test(PV_CONFIG.SUPABASE_ANON_KEY))
 /* ============ PREMVIO — shared helpers ============ */
 if (window.pvDead) throw new Error("stopped");
 const CFG = window.PV_CONFIG;
-const PV_BUILD = "V82";   // shown in the admin + manager menu so the owner can see which version is loaded
+const PV_BUILD = "V83";   // shown in every staff menu so the owner can see which version is loaded
 // Each panel keeps its own login, so logging out of one never logs out the others.
 // agent.html and agent-deposit.html share the agent login (log in once, use both).
 const PV_PANEL = /admin\.html/i.test(location.pathname) ? "admin" : /agent(-deposit)?\.html/i.test(location.pathname) ? "agent"
@@ -2119,6 +2119,7 @@ sb.auth.getSession().then(async ({ data }) => {
 const MG_ALL = [
   { id: "requests", label: "Password requests", icon: ICONS.lock },
   { id: "customers", label: "My customers", icon: ICONS.users },
+  { id: "links", label: "Invite links", icon: ICONS.gift },
   { id: "chats", label: "Help chats", icon: ICONS.chat },          // passed-on chats always; waiting chats only with the "help" tick box
   { id: "team", label: "Team questions", icon: ICONS.users },
   { id: "kyc", label: "KYC review", icon: ICONS.idcard, perm: "kyc" },
@@ -2177,7 +2178,7 @@ function route() {
   const v = $("#view");
   v.innerHTML = `<div class="loader"></div>`;
   if (MG.ch) { sb.removeChannel(MG.ch); MG.ch = null; }
-  const pages = { requests, customers, profile, chats: (x) => (hashArg() ? chat(x, Number(hashArg())) : chats(x)),
+  const pages = { requests, customers, profile, links: (x) => (hashArg() ? linkDetail(x, Number(hashArg())) : linksPage(x)), chats: (x) => (hashArg() ? chat(x, Number(hashArg())) : chats(x)),
     team: (x) => (hashArg() ? chat(x, Number(hashArg()), "team") : teamPage(x)), kyc: kycPage,
     deposits: (x) => depositsPage(x, "customer"), agentdeposits: (x) => depositsPage(x, "agent"), payouts: payoutsPage, agentpay: agentPayPage,
     sells: sellsPage, giveaways: giveawaysPage };
@@ -2226,6 +2227,76 @@ async function customers(v) {
   };
   $("#cq").oninput = () => { clearTimeout(t); t = setTimeout(load, 300); };
   await load();
+}
+
+/* ---------- V83: invite links — a manager shares a link; players who sign up from it are saved as theirs ---------- */
+async function siteUrl() {
+  if (MG.site) return MG.site;
+  const { data } = await sb.from("app_settings").select("value").eq("key", "site_url").maybeSingle();
+  MG.site = ((data && data.value) || "https://premvio.app").replace(/\/+$/, "");
+  return MG.site;
+}
+const linkUrl = (base, code) => `${base}/?m=${code}`;
+async function linksPage(v) {
+  const [{ data, error }, base] = await Promise.all([sb.rpc("manager_links_stats"), siteUrl()]);
+  if (error) throw error;
+  const sum = (k) => data.reduce((a, l) => a + Number(l[k] || 0), 0);
+  const stat = (k, val) => `<div class="stat"><div class="k">${k}</div><div class="v">${val ?? 0}</div></div>`;
+  v.innerHTML = `<div class="stats">${stat("Links", data.length)}${stat("Joined from my links", sum("joined"))}${stat("Joined this week", sum("joined7"))}
+      ${stat("KYC done", sum("kyc_done"))}${stat("Ordered", sum("ordered"))}</div>
+    <div class="toolbar"><button class="btn" id="newLink">+ New invite link</button></div>
+    <div class="table-wrap"><table><thead><tr><th>Link</th><th>Joined</th><th>KYC done</th><th>Ordered</th><th>Last join</th><th></th></tr></thead><tbody>
+    ${data.map((l) => `<tr class="${l.active ? "" : "muted"}"><td><b>${esc(l.label)}</b> ${l.active ? "" : `<span class="badge blocked">off</span>`}
+        <div class="mono small muted">${esc(linkUrl(base, l.code))}</div>${l.note ? `<div class="small" style="white-space:pre-wrap">📝 ${esc(l.note)}</div>` : ""}</td>
+      <td><b>${l.joined}</b>${Number(l.joined7) ? `<div class="small muted">+${l.joined7} this week</div>` : ""}</td><td>${l.kyc_done}</td><td>${l.ordered}</td>
+      <td class="small">${l.last_join ? fmtDate(l.last_join) : "—"}</td>
+      <td class="row wrap" style="gap:6px"><button class="btn sm soft" data-copy="${esc(l.code)}">${ICONS.copy} Copy</button>
+        ${navigator.share ? `<button class="btn sm soft" data-share="${esc(l.code)}">Share</button>` : ""}
+        <a class="btn sm soft" href="#links/${l.id}">Players</a><button class="btn sm ghost" data-edit="${l.id}">Edit</button></td></tr>`).join("")
+      || `<tr><td colspan="6" class="center muted">No links yet. Make one and share it — everyone who signs up from it becomes your player.</td></tr>`}</tbody></table></div>`;
+  $("#newLink").onclick = () => linkForm(null);
+  $$("[data-copy]", v).forEach((b) => (b.onclick = () => copyText(linkUrl(base, b.dataset.copy))));
+  $$("[data-share]", v).forEach((b) => (b.onclick = () => navigator.share({ title: "Premvio", text: "Join Premvio", url: linkUrl(base, b.dataset.share) }).catch(() => {})));
+  $$("[data-edit]", v).forEach((b) => (b.onclick = () => linkForm(data.find((l) => l.id === Number(b.dataset.edit)))));
+}
+function linkForm(l) {
+  openModal(`<h2>${l ? "Edit link" : "New invite link"}</h2>
+    <form id="lf"><label>Name</label><input name="label" maxlength="60" required value="${esc(l?.label || "")}" placeholder="e.g. Facebook group, Sub-manager Ramesh">
+      <label>Note <span class="small muted">(only you and the admin see it)</span></label>
+      <textarea name="note" maxlength="500" rows="3" placeholder="e.g. Ramesh hired on 1 Nov, shares in his Viber groups">${esc(l?.note || "")}</textarea>
+      ${l ? `<label class="row" style="gap:8px;margin-top:10px"><input type="checkbox" name="active" style="width:auto" ${l.active ? "checked" : ""}> Link is on (new sign-ups count)</label>` : ""}
+      <div class="row mt" style="gap:8px"><button class="btn grow">${l ? "Save" : "Make link"}</button><button type="button" class="btn ghost" id="lfx">Cancel</button></div></form>`);
+  $("#lfx").onclick = closeModal;
+  $("#lf").onsubmit = (e) => {
+    e.preventDefault();
+    const f = e.target;
+    busy($("button", f), async () => {
+      if (l) {
+        const { error } = await sb.rpc("manager_update_link", { p_id: l.id, p_label: f.label.value.trim(), p_note: f.note.value.trim(), p_active: f.active.checked });
+        if (error) throw error;
+        toast("Saved.", "success");
+      } else {
+        const { data, error } = await sb.rpc("manager_create_link", { p_label: f.label.value.trim(), p_note: f.note.value.trim() || null });
+        if (error) throw error;
+        copyText(linkUrl(await siteUrl(), data.code));
+      }
+      closeModal(); route();
+    });
+  };
+}
+async function linkDetail(v, id) {
+  const [{ data: links }, { data, error }] = await Promise.all([sb.rpc("manager_links_stats"), sb.rpc("link_players", { p_link: id })]);
+  const l = (links || []).find((x) => x.id === id);
+  if (error || !l) { v.innerHTML = `<a class="back-link" href="#links">← Back</a><div class="card">${esc(error ? errMsg(error) : "Link not found")}</div>`; return; }
+  v.innerHTML = `<a class="back-link" href="#links">← Back</a>
+    <div class="card"><h2 style="margin:0">${esc(l.label)}</h2><div class="mono small muted">${esc(linkUrl(await siteUrl(), l.code))}</div>
+      ${l.note ? `<p class="small" style="white-space:pre-wrap">📝 ${esc(l.note)}</p>` : ""}</div>
+    <p class="small muted">${data.length} player${data.length === 1 ? "" : "s"} joined from this link</p>
+    <div class="table-wrap"><table><thead><tr><th>Player</th><th>KYC</th><th>Orders</th><th>Joined</th><th></th></tr></thead><tbody>
+    ${data.map((c) => `<tr><td><b>${esc(c.full_name)}</b><div class="mono small muted">${esc(c.member_id)}</div></td>
+      <td><span class="badge ${c.kyc_status === "none" ? "" : c.kyc_status}">${esc(c.kyc_status)}</span></td><td>${c.orders}</td>
+      <td class="small">${fmtDate(c.joined_at)}</td><td><a class="btn sm soft" href="#customers/${encodeURIComponent(c.member_id)}">Open</a></td></tr>`).join("")
+      || `<tr><td colspan="5" class="center muted">Nobody yet.</td></tr>`}</tbody></table></div>`;
 }
 
 async function customerDetail(v, member) {
