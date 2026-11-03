@@ -318,6 +318,10 @@ td .btn + .btn { margin-left: 6px; }
 .otp { font-family: ui-monospace, Menlo, monospace; font-size: 1.6rem; letter-spacing: .5em; text-align: center; }
 .steps { padding-left: 20px; margin: 8px 0; } .steps li { margin: 6px 0; }
 .doc-preview { margin-top: 10px; border-radius: 12px; max-height: 220px; object-fit: contain; background: var(--bg-2); width: 100%; }
+/* V93: KYC rejected → send a document to the security department */
+.sec-ask { text-align: center; padding: 16px 12px; border: 1px solid rgba(255, 92, 92, .45); background: rgba(255, 92, 92, .07); border-radius: 14px; }
+.sec-ask .big { font-size: 2rem; }
+.sec-ask b { display: block; color: var(--red); font-size: 1.02rem; margin-top: 4px; }
 .photo-ask { border: 1px dashed var(--orange); background: rgba(255, 159, 67, .07); border-radius: 12px; padding: 12px; margin-top: 12px; }
 
 /* ---------- refunds ---------- */
@@ -534,6 +538,12 @@ td .btn + .btn { margin-left: 6px; }
 .pm-tile:active { transform: scale(.97); }
 .pm-tile.on { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(31, 162, 255, .15); }
 .pm-tile .pm-logo { width: 54px; height: 54px; }
+/* V92: Telegram-direct method (tap opens Telegram) */
+a.pm-tile { text-decoration: none; position: relative; }
+.pm-tile .pm-tg { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; border-radius: 50%; background: #229ed9; color: #fff;
+  display: grid; place-items: center; padding: 4px; box-sizing: border-box; }
+.pm-tile .pm-tg svg { width: 100%; height: 100%; }
+#tgBox { padding: 2px 0 6px; }
 .pm-name { font-size: .82rem; font-weight: 700; text-align: center; line-height: 1.2; word-break: break-word; }
 .pm-panel .pm-logo { width: 46px; height: 46px; }
 .pm-info { white-space: pre-wrap; padding: 12px; border-radius: 12px; background: var(--card-2); font-weight: 600; border-left: 3px solid var(--blue); }
@@ -1290,6 +1300,16 @@ body.wa-mode .fab-help { display: none; }
 .sdot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
 .sdot.on { background: #46d17d; box-shadow: 0 0 0 3px rgba(70, 209, 125, .2); } .sdot.away { background: var(--gold); } .sdot.off { background: #5b6478; }
 
+/* V91: terms & policies */
+.terms-agree { font-size: .86rem; line-height: 1.45; font-weight: 500; }
+.terms-agree a, .legal-body a { color: var(--blue); }
+.legal-tabs { display: flex; gap: 6px; margin: 4px 0 10px; flex-wrap: wrap; }
+.legal-tabs button { flex: 1; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--bg-2); color: var(--text); font: inherit; font-size: .82rem; font-weight: 700; cursor: pointer; }
+.legal-tabs button.on { background: var(--blue); border-color: var(--blue); color: #fff; }
+.legal-body { max-height: 58vh; overflow: auto; font-size: .9rem; line-height: 1.55; padding-right: 4px; }
+.legal-body h3 { margin: 16px 0 6px; font-size: 1rem; }
+.legal-body ul { margin: 4px 0; padding-left: 20px; } .legal-body li { margin: 3px 0; } .legal-body p { margin: 6px 0; }
+
 </style>
 <title>Premvio Account Manager</title>
 <meta name="robots" content="noindex">
@@ -1332,7 +1352,7 @@ else if(!PV_CONFIG.SUPABASE_ANON_KEY||/PASTE/.test(PV_CONFIG.SUPABASE_ANON_KEY))
 /* ============ PREMVIO — shared helpers ============ */
 if (window.pvDead) throw new Error("stopped");
 const CFG = window.PV_CONFIG;
-const PV_BUILD = "V90";   // shown in every staff menu so the owner can see which version is loaded
+const PV_BUILD = "V93";   // shown in every staff menu so the owner can see which version is loaded
 // Each panel keeps its own login, so logging out of one never logs out the others.
 // agent.html and agent-deposit.html share the agent login (log in once, use both).
 const PV_PANEL = /admin\.html/i.test(location.pathname) ? "admin" : /agent(-deposit)?\.html/i.test(location.pathname) ? "agent"
@@ -2468,38 +2488,46 @@ function rejectModal(title, label, onOk) {
 }
 
 /* ---------- KYC ---------- */
+// V93: players are approved automatically; the manager checks later. Approve = checked (player not told).
+// Reject = any time (also later for suspicious activity): withdrawals stop, player is asked for a document (security department).
 async function kycPage(v) {
-  MG.kf = MG.kf || "pending";
+  const tabs = [["unchecked", "Not checked yet"], ["checked", "Checked ✓"], ["rejected", "Rejected"], ["all", "All"]];
+  if (!tabs.some(([k]) => k === MG.kf)) MG.kf = "unchecked";
   const { data, error } = await sb.rpc("mgr_kyc", { p_status: MG.kf });
   if (error) throw error;
-  v.innerHTML = stChips(MG.kf, "kf") + (data.length ? data.map((k) => `<div class="card">
-    <div class="row between wrap"><div><b>${esc(k.account_name)}</b> <span class="mono small muted">${esc(k.member_id)}</span></div><span class="badge ${k.status}">${k.status}</span></div>
+  const state = (k) => k.status === "rejected" ? `<span class="badge rejected">rejected</span>`
+    : !k.checked ? `<span class="badge pending">not checked</span>` : `<span class="badge approved">checked ✓</span>`;
+  v.innerHTML = stChips(MG.kf, "kf", tabs) + (data.length ? data.map((k) => `<div class="card">
+    <div class="row between wrap"><div><b>${esc(k.account_name)}</b> <span class="mono small muted">${esc(k.member_id)}</span></div>${state(k)}</div>
     <div class="pw-grid mt"><div><span class="muted small">Name on ID</span><b>${esc(k.full_name)}</b></div>
       <div><span class="muted small">Document</span><b>${esc(k.doc_type)} · <span class="mono">${esc(k.doc_number)}</span></b></div>
       <div><span class="muted small">Address</span><b>${esc(k.city)}, ${esc(k.region)}</b></div>
       <div><span class="muted small">Account</span><b>${esc(k.email || "")}</b><span class="small">${esc(k.phone || "")} · ${esc(k.country || "")}</span></div></div>
-    ${k.note ? `<p class="small muted">Note: ${esc(k.note)}</p>` : ""}
-    <div class="row mt" style="gap:8px;flex-wrap:wrap">${k.photo_path ? `<button class="btn sm soft" data-proof="${esc(k.photo_path)}">🪪 View photo</button>` : `<span class="small muted">No photo</span>`}
-      ${k.status === "pending" ? `<button class="btn sm success" data-kok="${k.user_id}">Approve</button><button class="btn sm ghost" data-kno="${k.user_id}">Reject</button>` : ""}</div></div>`).join("")
+    ${k.checked && k.checked_at ? `<p class="small muted">${k.status === "rejected" ? "Rejected" : "Checked"} ${fmtDate(k.checked_at)}${k.checked_by_id ? " · " + esc(k.checked_by_id) : ""}</p>` : ""}
+    ${k.last_note ? `<p class="small" style="color:var(--red)">Reason: ${esc(k.last_note)}</p>` : ""}
+    <div class="row mt" style="gap:8px;flex-wrap:wrap">${k.photo_path ? `<button class="btn sm soft" data-proof="${esc(k.photo_path)}">🪪 View photo</button>` : ""}
+      ${k.status === "rejected" || !k.checked ? `<button class="btn sm success" data-kok="${k.user_id}" data-rej="${k.status === "rejected" ? 1 : ""}">Approve</button>` : ""}
+      ${k.status !== "rejected" ? `<button class="btn sm ghost" data-kno="${k.user_id}">Reject</button>` : ""}</div></div>`).join("")
     : `<div class="empty">Nothing here</div>`);
   $$("[data-kf]", v).forEach((c) => (c.onclick = () => { MG.kf = c.dataset.kf; route(); }));
   bindProofs(v, "kyc");
   $$("[data-kok]", v).forEach((b) => (b.onclick = async () => {
-    if (!(await confirmBox("Approve KYC?", "Only if the name and document number match the photo.", "Approve"))) return;
+    const again = !!b.dataset.rej;
+    if (again && !(await confirmBox("Approve again?", "Only if the security department got good documents. The player can withdraw again and gets a notification.", "Approve"))) return;
     const { error: er } = await sb.rpc("admin_review_kyc", { p_user: b.dataset.kok, p_approve: true, p_note: null });
     if (er) return toast(errMsg(er), "error");
-    toast("KYC approved.", "success"); route();
+    toast(again ? "Approved — withdrawals are open again." : "Marked as checked ✓", "success"); route();
   }));
   $$("[data-kno]", v).forEach((b) => (b.onclick = () => openModal(`<h2>Reject KYC</h2><form id="kjf">
-      <label>Reason (the customer sees it)</label><input name="note" required maxlength="200" placeholder="e.g. Photo not clear">
-      <label class="jrad" style="display:flex !important;margin-top:10px !important"><input type="checkbox" name="ph"> Ask for a document photo</label>
+      <p class="small muted">Withdrawals stop now. The player sees: “Please send a document to the security department. Message customer support to get the email address.”</p>
+      <label>Reason <span class="muted">(only staff see it)</span></label><input name="note" required maxlength="200" placeholder="e.g. Suspicious activity">
       <button class="btn danger block mt">Reject</button></form>`, (m) => {
     $("#kjf", m).onsubmit = (e) => {
       e.preventDefault();
       busy($("button", e.target), async () => {
-        const { error: er } = await sb.rpc("admin_review_kyc", { p_user: b.dataset.kno, p_approve: false, p_note: e.target.note.value.trim(), p_require_photo: e.target.ph.checked });
+        const { error: er } = await sb.rpc("admin_review_kyc", { p_user: b.dataset.kno, p_approve: false, p_note: e.target.note.value.trim() });
         if (er) throw er;
-        closeModal(); toast("Rejected.", "success"); route();
+        closeModal(); toast("Rejected. Withdrawals are stopped.", "success"); route();
       });
     };
   })));
